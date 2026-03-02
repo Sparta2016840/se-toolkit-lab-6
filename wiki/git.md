@@ -51,6 +51,8 @@ A commit is a snapshot of your project at a specific point in time. Each commit 
 
 A hash of a commit in `Git`.
 
+Example: `4aeacb54f898125560c545e5e0477762094027a7`
+
 Docs:
 
 - [Git Has Integrity](https://git-scm.com/book/en/v2/Git-Tools-Revision-Selection#_git_has_integrity)
