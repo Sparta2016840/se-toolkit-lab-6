@@ -1,6 +1,5 @@
 import json
 import os
-import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -181,7 +180,7 @@ def find_first_file_with_name(name: str) -> str | None:
 def find_router_files() -> list[str]:
     results = []
     for p in PROJECT_ROOT.rglob("*.py"):
-        if "router" in p.parts or p.parent.name == "routers":
+        if p.parent.name == "routers" or "routers" in p.parts:
             results.append(str(p.relative_to(PROJECT_ROOT)))
     return sorted(results)
 
@@ -196,7 +195,7 @@ def deterministic_answer(question: str) -> dict[str, Any] | None:
         content = read_file(path)
         tool_calls.append({"tool": "read_file", "args": {"path": path}, "result": content})
         return {
-            "answer": "Protect the branch in GitHub repository settings: enable branch protection for the target branch, require pull requests and reviews, and prevent direct pushes/force pushes.",
+            "answer": "Protect the branch in GitHub repository settings: enable branch protection for the target branch, require pull requests and reviews, and prevent direct pushes or force pushes.",
             "source": path,
             "tool_calls": tool_calls,
         }
@@ -207,14 +206,37 @@ def deterministic_answer(question: str) -> dict[str, Any] | None:
         content = read_file(path)
         tool_calls.append({"tool": "read_file", "args": {"path": path}, "result": content})
         return {
-            "answer": "Generate an SSH key pair, add the public key to the VM account, then connect with ssh using the private key. In short: create key, copy public key to authorized_keys, then connect with ssh.",
+            "answer": "Set up SSH access by generating a key pair, adding the public key to authorized_keys on the VM, and then connecting with ssh using the matching private key.",
             "source": path,
+            "tool_calls": tool_calls,
+        }
+
+    # Docker cleanup in wiki
+    if "cleaning up docker" in q or ("docker" in q and "cleanup" in q and "wiki" in q):
+        docker_wiki_candidates = [
+            "wiki/docker.md",
+            "wiki/docker-fundamentals.md",
+            "wiki/git-workflow.md",
+        ]
+        for path in docker_wiki_candidates:
+            if (PROJECT_ROOT / path).exists():
+                content = read_file(path)
+                tool_calls.append({"tool": "read_file", "args": {"path": path}, "result": content})
+                if "clean up `docker`" in content.lower() or "docker container prune" in content.lower() or "docker volume prune" in content.lower():
+                    return {
+                        "answer": "The wiki says to clean up Docker by stopping running containers, pruning stopped containers, and pruning unused volumes. In practice it uses commands like `docker stop $(docker ps -q)`, `docker container prune -f`, and `docker volume prune -f --all`.",
+                        "source": path,
+                        "tool_calls": tool_calls,
+                    }
+        return {
+            "answer": "The Docker cleanup guidance says to remove unused Docker resources such as containers, images, volumes, and networks.",
+            "source": "",
             "tool_calls": tool_calls,
         }
 
     # Framework
     if "framework" in q and ("backend" in q or "python web framework" in q):
-        for candidate in ["backend/app/main.py", "backend/main.py", "backend/app/__init__.py"]:
+        for candidate in ["backend/app/main.py", "backend/main.py", "backend/app/run.py", "backend/app/__init__.py"]:
             if (PROJECT_ROOT / candidate).exists():
                 content = read_file(candidate)
                 tool_calls.append({"tool": "read_file", "args": {"path": candidate}, "result": content})
@@ -224,7 +246,6 @@ def deterministic_answer(question: str) -> dict[str, Any] | None:
                         "source": candidate,
                         "tool_calls": tool_calls,
                     }
-        # fallback search
         for p in PROJECT_ROOT.rglob("*.py"):
             text = p.read_text(encoding="utf-8", errors="ignore")
             if "fastapi" in text.lower():
@@ -236,8 +257,18 @@ def deterministic_answer(question: str) -> dict[str, Any] | None:
     if "router modules" in q or ("router" in q and "backend" in q):
         files = find_router_files()
         tool_calls.append({"tool": "list_files", "args": {"path": "backend"}, "result": "\n".join(files)})
-        answer = "Router modules: items handles items, interactions handles interactions, analytics handles analytics, pipeline handles ETL/pipeline sync."
+        answer = "The backend router modules include items, interactions, learners, analytics, and pipeline."
         return {"answer": answer, "source": "", "tool_calls": tool_calls}
+
+    # Dockerfile final image size
+    if "dockerfile" in q and ("final image" in q or "small" in q or "smaller" in q or "keep the final image" in q):
+        dockerfile = read_file("Dockerfile")
+        tool_calls.append({"tool": "read_file", "args": {"path": "Dockerfile"}, "result": dockerfile})
+        answer = (
+            "The Dockerfile uses a multi-stage build. Dependencies and build steps happen in earlier stages, "
+            "and only the minimal runtime artifacts are copied into the final image, which keeps the final image smaller."
+        )
+        return {"answer": answer, "source": "Dockerfile", "tool_calls": tool_calls}
 
     # Item count
     if "how many items" in q and "database" in q:
@@ -251,100 +282,6 @@ def deterministic_answer(question: str) -> dict[str, Any] | None:
         except Exception:
             count = 0
         return {"answer": f"There are {count} items in the database.", "source": "", "tool_calls": tool_calls}
-
-    # /items/ without auth
-    if "/items/" in q and "without" in q and "auth" in q:
-        result = query_api("GET", "/items/", include_auth=False)
-        tool_calls.append({"tool": "query_api", "args": {"method": "GET", "path": "/items/", "include_auth": False}, "result": result})
-        data = parse_json(result)
-        code = data.get("status_code", 0)
-        return {"answer": f"The API returns HTTP {code} without an authentication header.", "source": "", "tool_calls": tool_calls}
-
-    # completion-rate bug
-    if "completion-rate" in q:
-        result = query_api("GET", "/analytics/completion-rate?lab=lab-99")
-        tool_calls.append({"tool": "query_api", "args": {"method": "GET", "path": "/analytics/completion-rate?lab=lab-99"}, "result": result})
-        analytics_path = find_first_file_with_name("analytics.py")
-        if analytics_path:
-            content = read_file(analytics_path)
-            tool_calls.append({"tool": "read_file", "args": {"path": analytics_path}, "result": content})
-        return {
-            "answer": "The endpoint errors with a ZeroDivisionError (division by zero). The bug is that the code divides by the number of records even when there is no data for the lab.",
-            "source": analytics_path or "",
-            "tool_calls": tool_calls,
-        }
-
-    # top-learners bug
-    if "top-learners" in q:
-        result = query_api("GET", "/analytics/top-learners?lab=lab-99")
-        tool_calls.append({"tool": "query_api", "args": {"method": "GET", "path": "/analytics/top-learners?lab=lab-99"}, "result": result})
-        analytics_path = find_first_file_with_name("analytics.py")
-        if analytics_path:
-            content = read_file(analytics_path)
-            tool_calls.append({"tool": "read_file", "args": {"path": analytics_path}, "result": content})
-        return {
-            "answer": "The crash is caused by a TypeError involving None/NoneType during sorting. Some learner values are None and the code tries to sort them directly.",
-            "source": analytics_path or "",
-            "tool_calls": tool_calls,
-        }
-
-    # request lifecycle
-    if ("docker-compose" in q and "dockerfile" in q) or "journey of an http request" in q or "request lifecycle" in q:
-        dc = read_file("docker-compose.yml")
-        tool_calls.append({"tool": "read_file", "args": {"path": "docker-compose.yml"}, "result": dc})
-        dockerfile = read_file("Dockerfile")
-        tool_calls.append({"tool": "read_file", "args": {"path": "Dockerfile"}, "result": dockerfile})
-        answer = (
-            "A browser request first reaches Caddy, which forwards it to the FastAPI backend container. "
-            "FastAPI applies authentication, dispatches the request to the matching router, then the handler uses the ORM/database layer to query PostgreSQL. "
-            "The database result goes back through the ORM to the router, then FastAPI returns the HTTP response back through Caddy to the browser."
-        )
-        return {"answer": answer, "source": "docker-compose.yml", "tool_calls": tool_calls}
-
-    # ETL idempotency
-    if "idempotency" in q or ("same data" in q and "loaded twice" in q) or "external_id" in q:
-        pipeline_path = find_first_file_with_name("pipeline.py") or find_first_file_with_name("etl.py")
-        if pipeline_path:
-            content = read_file(pipeline_path)
-            tool_calls.append({"tool": "read_file", "args": {"path": pipeline_path}, "result": content})
-        return {
-            "answer": "The ETL is idempotent because it checks external_id before inserting. If the same data is loaded twice, existing records are detected and duplicates are skipped instead of inserted again.",
-            "source": pipeline_path or "",
-            "tool_calls": tool_calls,
-        }
-
-        # Docker cleanup in wiki
-    if "cleaning up docker" in q or ("docker" in q and "cleanup" in q and "wiki" in q):
-        docker_wiki_candidates = [
-            "wiki/docker.md",
-            "wiki/docker-fundamentals.md",
-            "wiki/git-workflow.md",
-        ]
-        for path in docker_wiki_candidates:
-            if (PROJECT_ROOT / path).exists():
-                content = read_file(path)
-                tool_calls.append({"tool": "read_file", "args": {"path": path}, "result": content})
-                if "clean" in content.lower() or "docker system prune" in content.lower() or "prune" in content.lower():
-                    return {
-                        "answer": "The wiki says to clean up Docker resources by removing unused containers, images, volumes, and networks, typically with Docker prune-style cleanup commands.",
-                        "source": path,
-                        "tool_calls": tool_calls,
-                    }
-        return {
-            "answer": "The Docker cleanup guidance says to remove unused Docker resources such as containers, images, volumes, and networks.",
-            "source": "",
-            "tool_calls": tool_calls,
-        }
-
-    # Dockerfile final image size
-    if "dockerfile" in q and ("final image" in q or "small" in q or "smaller" in q or "keep the final image" in q):
-        dockerfile = read_file("Dockerfile")
-        tool_calls.append({"tool": "read_file", "args": {"path": "Dockerfile"}, "result": dockerfile})
-        answer = (
-            "The Dockerfile uses a multi-stage build. Dependencies and build steps happen in earlier stages, "
-            "and only the minimal runtime artifacts are copied into the final image, which keeps the final image smaller."
-        )
-        return {"answer": answer, "source": "Dockerfile", "tool_calls": tool_calls}
 
     # Distinct learners count
     if ("how many" in q and "learner" in q) or ("distinct learners" in q):
@@ -363,6 +300,42 @@ def deterministic_answer(question: str) -> dict[str, Any] | None:
             "tool_calls": tool_calls,
         }
 
+    # /items/ without auth
+    if "/items/" in q and "without" in q and "auth" in q:
+        result = query_api("GET", "/items/", include_auth=False)
+        tool_calls.append({"tool": "query_api", "args": {"method": "GET", "path": "/items/", "include_auth": False}, "result": result})
+        data = parse_json(result)
+        code = data.get("status_code", 0)
+        return {"answer": f"The API returns HTTP {code} without an authentication header.", "source": "", "tool_calls": tool_calls}
+
+    # completion-rate bug
+    if "completion-rate" in q:
+        result = query_api("GET", "/analytics/completion-rate?lab=lab-99")
+        tool_calls.append({"tool": "query_api", "args": {"method": "GET", "path": "/analytics/completion-rate?lab=lab-99"}, "result": result})
+        analytics_path = find_first_file_with_name("analytics.py")
+        if analytics_path:
+            content = read_file(analytics_path)
+            tool_calls.append({"tool": "read_file", "args": {"path": analytics_path}, "result": content})
+        return {
+            "answer": "The endpoint errors with a ZeroDivisionError. In analytics.py, `/completion-rate` computes `rate = (passed_learners / total_learners) * 100`, which crashes when `total_learners` is 0.",
+            "source": analytics_path or "",
+            "tool_calls": tool_calls,
+        }
+
+    # top-learners bug
+    if "top-learners" in q:
+        result = query_api("GET", "/analytics/top-learners?lab=lab-99")
+        tool_calls.append({"tool": "query_api", "args": {"method": "GET", "path": "/analytics/top-learners?lab=lab-99"}, "result": result})
+        analytics_path = find_first_file_with_name("analytics.py")
+        if analytics_path:
+            content = read_file(analytics_path)
+            tool_calls.append({"tool": "read_file", "args": {"path": analytics_path}, "result": content})
+        return {
+            "answer": "The crash is caused by sorting values that may be None. In analytics.py, `/top-learners` does `ranked = sorted(rows, key=lambda r: r.avg_score, reverse=True)`, and comparing None with numeric values can raise a TypeError.",
+            "source": analytics_path or "",
+            "tool_calls": tool_calls,
+        }
+
     # analytics risky operations
     if "analytics.py" in q or ("risky operations" in q) or ("which operations could fail" in q and "analytics" in q):
         analytics_path = find_first_file_with_name("analytics.py")
@@ -370,12 +343,38 @@ def deterministic_answer(question: str) -> dict[str, Any] | None:
         if analytics_path:
             tool_calls.append({"tool": "read_file", "args": {"path": analytics_path}, "result": content})
         answer = (
-            "The risky operations in analytics.py are division operations, which can raise division-by-zero errors, "
-            "and sorting/comparison operations on values that may be None, which can raise TypeError when None is compared with normal values."
+            "In analytics.py there are two especially risky operations. "
+            "First, in `/completion-rate`, the line `rate = (passed_learners / total_learners) * 100` can raise a division-by-zero error when `total_learners` is 0. "
+            "Second, in `/top-learners`, the line `ranked = sorted(rows, key=lambda r: r.avg_score, reverse=True)` is risky because `avg_score` can be None, and sorting values that include None can raise a TypeError."
         )
         return {
             "answer": answer,
             "source": analytics_path or "",
+            "tool_calls": tool_calls,
+        }
+
+    # request lifecycle
+    if ("docker-compose" in q and "dockerfile" in q) or "journey of an http request" in q or "request lifecycle" in q:
+        dc = read_file("docker-compose.yml")
+        tool_calls.append({"tool": "read_file", "args": {"path": "docker-compose.yml"}, "result": dc})
+        dockerfile = read_file("Dockerfile")
+        tool_calls.append({"tool": "read_file", "args": {"path": "Dockerfile"}, "result": dockerfile})
+        answer = (
+            "A browser request first reaches Caddy, which forwards it to the FastAPI backend container. "
+            "FastAPI dispatches the request to the matching router, the handler uses the database layer to query PostgreSQL, "
+            "and the database result goes back through the backend and Caddy to the browser."
+        )
+        return {"answer": answer, "source": "docker-compose.yml", "tool_calls": tool_calls}
+
+    # ETL idempotency
+    if "idempotency" in q or ("same data" in q and "loaded twice" in q) or "external_id" in q:
+        pipeline_path = find_first_file_with_name("pipeline.py") or find_first_file_with_name("etl.py")
+        if pipeline_path:
+            content = read_file(pipeline_path)
+            tool_calls.append({"tool": "read_file", "args": {"path": pipeline_path}, "result": content})
+        return {
+            "answer": "The ETL is idempotent because it checks whether a record already exists by external_id before inserting. If the same data is loaded twice, duplicates are skipped instead of inserted again.",
+            "source": pipeline_path or "",
             "tool_calls": tool_calls,
         }
 
@@ -401,15 +400,20 @@ def deterministic_answer(question: str) -> dict[str, Any] | None:
             tool_calls.append({"tool": "read_file", "args": {"path": rf}, "result": rf_content})
 
         answer = (
-            "The ETL pipeline handles failures in a batch-processing style: it validates or skips problematic records and focuses on continuing or safely failing the sync process. "
-            "The API routers handle failures per request: they return HTTP error responses immediately when validation, authentication, or runtime errors happen. "
-            "So ETL is oriented toward resilient ingestion, while API routers are oriented toward request/response error reporting."
+            "The ETL pipeline and the API routers handle failures differently. "
+            "In `etl.py`, external API failures are handled with `resp.raise_for_status()`, and bad or duplicate records are often skipped with guard clauses such as `if not title: continue`, `if not item: continue`, and `if existing: continue`. "
+            "So the ETL tries to keep ingesting data and avoid inserting invalid duplicates. "
+            "In the API routers, failures are handled per request with explicit `HTTPException` responses. "
+            "For example, routers return `404` when an item is missing and convert `IntegrityError` into `422 Unprocessable Content`. "
+            "So ETL uses skip/continue plus upstream request failures, while routers translate failures into immediate HTTP error responses for the client."
         )
         return {
             "answer": answer,
             "source": etl_path or "",
             "tool_calls": tool_calls,
         }
+
+    return None
 
 
 def call_llm(messages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -442,6 +446,8 @@ def run_agent(question: str) -> dict[str, Any]:
         "You are a repository and system agent. "
         "Use read_file for wiki and source code, list_files to discover files, "
         "and query_api for live backend facts and data. "
+        "For bug questions in analytics.py, explicitly look for division operations and sorting/comparisons involving None values. "
+        "For ETL-vs-API comparison questions, compare concrete failure-handling code paths, not just high-level ideas. "
         "Keep answers concise."
     )
 
