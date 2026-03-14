@@ -51,18 +51,54 @@ def list_files(path: str) -> str:
         return f"ERROR: {e}"
 
 
+def query_api(method: str, path: str, body: str | None = None) -> str:
+    base_url = os.environ.get("AGENT_API_BASE_URL", "http://localhost:42002").rstrip("/")
+    lms_api_key = os.environ["LMS_API_KEY"]
+
+    headers = {
+        "Authorization": f"Bearer {lms_api_key}",
+        "Content-Type": "application/json",
+    }
+
+    url = f"{base_url}{path}"
+
+    try:
+        response = httpx.request(
+            method=method.upper(),
+            url=url,
+            headers=headers,
+            content=body if body else None,
+            timeout=30,
+        )
+        return json.dumps(
+            {
+                "status_code": response.status_code,
+                "body": response.text,
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return json.dumps(
+            {
+                "status_code": 0,
+                "body": f"ERROR: {e}",
+            },
+            ensure_ascii=False,
+        )
+
+
 TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a file from the project repository using a relative path.",
+            "description": "Read a file from the project repository using a relative path. Use this for wiki docs and source code.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path from the project root, for example wiki/git-workflow.md",
+                        "description": "Relative path from the project root, for example wiki/git-workflow.md or backend/app/main.py",
                     }
                 },
                 "required": ["path"],
@@ -74,16 +110,42 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "List files and directories at a relative directory path in the project repository.",
+            "description": "List files and directories at a relative directory path in the project repository. Use this to discover wiki or backend files.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative directory path from the project root, for example wiki",
+                        "description": "Relative directory path from the project root, for example wiki or backend/app/routers",
                     }
                 },
                 "required": ["path"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_api",
+            "description": "Call the running backend API for live system facts and data. Use this for counts, runtime errors, status codes, analytics endpoints, and current database-backed answers.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "method": {
+                        "type": "string",
+                        "description": "HTTP method such as GET or POST",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "API path starting with /, for example /items/ or /analytics/completion-rate?lab=lab-99",
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Optional JSON request body as a string",
+                    },
+                },
+                "required": ["method", "path"],
                 "additionalProperties": False,
             },
         },
@@ -96,6 +158,8 @@ def execute_tool(name: str, args: dict[str, Any]) -> str:
         return read_file(str(args["path"]))
     if name == "list_files":
         return list_files(str(args["path"]))
+    if name == "query_api":
+        return query_api(str(args["method"]), str(args["path"]), args.get("body"))
     return f"ERROR: unknown tool: {name}"
 
 
@@ -135,12 +199,14 @@ def call_llm(messages: list[dict[str, Any]]) -> dict[str, Any]:
 
 def run_agent(question: str) -> dict[str, Any]:
     system_prompt = (
-        "You are a documentation agent for this repository. "
-        "Use list_files to discover wiki files and read_file to inspect them. "
-        "Prefer wiki/ for documentation questions. "
-        "When you answer, include a line in the format 'Source: path#section-anchor' "
-        "if you found the answer in documentation. "
-        "Keep answers concise."
+        "You are a repository and system agent. "
+        "Use read_file for wiki and source code, list_files to discover files, "
+        "and query_api for live backend facts and data. "
+        "For wiki questions, prefer wiki/ files. "
+        "For framework, routers, Docker, ETL, and bug diagnosis questions, inspect source code. "
+        "For counts, status codes, analytics results, and runtime behavior, use query_api. "
+        "You may chain tools. Keep answers concise. "
+        "If documentation provides a clear source section, include a line in the format 'Source: path#section-anchor'."
     )
 
     messages: list[dict[str, Any]] = [
