@@ -11,7 +11,29 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 MAX_TOOL_CALLS = 10
 
 
+def load_local_env_files() -> None:
+    """
+    Load local convenience env files into os.environ,
+    but do NOT override variables that are already injected.
+    """
+    for env_name in [".env.agent.secret", ".env.docker.secret", ".env"]:
+        env_path = PROJECT_ROOT / env_name
+        if not env_path.exists():
+            continue
+
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
 def load_config() -> dict[str, str]:
+    load_local_env_files()
     return {
         "api_key": os.environ["LLM_API_KEY"],
         "api_base": os.environ["LLM_API_BASE"].rstrip("/"),
@@ -52,6 +74,7 @@ def list_files(path: str) -> str:
 
 
 def query_api(method: str, path: str, body: str | None = None) -> str:
+    load_local_env_files()
     base_url = os.environ.get("AGENT_API_BASE_URL", "http://localhost:42002").rstrip("/")
     lms_api_key = os.environ["LMS_API_KEY"]
 
@@ -265,13 +288,26 @@ def run_agent(question: str) -> dict[str, Any]:
 
 
 def main() -> None:
-    if len(sys.argv) < 2:
-        print(json.dumps({"error": "Usage: python agent.py <question>"}))
-        raise SystemExit(1)
+    try:
+        if len(sys.argv) < 2:
+            print(json.dumps({"error": "Usage: python agent.py <question>"}))
+            raise SystemExit(1)
 
-    question = " ".join(sys.argv[1:])
-    result = run_agent(question)
-    print(json.dumps(result, ensure_ascii=False))
+        question = " ".join(sys.argv[1:])
+        result = run_agent(question)
+        print(json.dumps(result, ensure_ascii=False))
+    except Exception as e:
+        print(
+            json.dumps(
+                {
+                    "answer": f"ERROR: {e}",
+                    "source": "",
+                    "tool_calls": [],
+                },
+                ensure_ascii=False,
+            )
+        )
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
