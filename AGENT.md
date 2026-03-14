@@ -1,31 +1,9 @@
 # Agent architecture
 
-## Overview
-This agent is a CLI documentation agent for the repository.
+This project implements a CLI repository and system agent for the learning management service lab. The agent is designed to answer three types of questions: documentation questions, source-code questions, and live system questions. It reads the user question from command-line arguments, sends the conversation to an OpenAI-compatible LLM API, and supports function calling so that the model can use tools when needed.
 
-## Flow
-1. Read the question from command line.
-2. Read `LLM_API_KEY`, `LLM_API_BASE`, and `LLM_MODEL` from environment variables.
-3. Send the question, system prompt, and tool schemas to an OpenAI-compatible chat completions API.
-4. If the model returns tool calls:
-   - execute `list_files` or `read_file`
-   - append the tool result to the conversation
-   - continue the loop
-5. If the model returns normal text:
-   - extract the answer
-   - extract the `Source: ...` line
-   - print JSON with `answer`, `source`, and `tool_calls`
+The agent currently exposes three tools. The first tool, `list_files`, lists files and directories inside the repository using relative paths. This is useful when the model first needs to discover where relevant documentation or source code is located. The second tool, `read_file`, reads repository files such as wiki pages and backend source code. This tool is used for documentation lookup, framework inspection, router analysis, and debugging questions that depend on static code structure. The third tool, `query_api`, calls the running backend API and is used for live runtime facts such as item counts, analytics output, response status codes, and system behavior that depends on current database state.
 
-## Tools
-- `list_files(path)` lists files and directories relative to the project root.
-- `read_file(path)` reads file contents relative to the project root.
+For safety, file tools resolve paths relative to the project root and reject escaping outside the repository. The agent runs in a bounded loop with a maximum number of tool calls so it cannot recurse forever. The final JSON output always contains the answer, the source string if available, and the list of tool calls used during reasoning.
 
-## Security
-Both tools resolve paths relative to the project root and reject paths outside it.
-
-## Prompt strategy
-The system prompt tells the model to:
-- use `list_files` to discover wiki files
-- use `read_file` to inspect relevant documentation
-- include a source reference in the final answer
-- keep answers concise
+A key lesson from development was that different question classes require different evidence sources. Wiki questions are usually best answered with `read_file`, while runtime questions require `query_api`. Another lesson was that backend authentication and external eval credentials are separate concerns: `LMS_API_KEY` is used for the local system API, while LLM and autochecker credentials are configured independently through environment variables.
